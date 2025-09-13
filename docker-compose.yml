@@ -1,0 +1,24 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "${DB_PASSWORD}"
+    ports:
+      - "${DB_PORT}:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    restart: unless-stopped
+    # La sección healthcheck en Docker Compose sirve para que Docker verifique automáticamente si un contenedor está “saludable”. Esto es útil porque otros contenedores o servicios pueden depender de que este esté listo antes de arrancar.
+    healthcheck:
+    # Es el comando que Docker ejecuta dentro del contenedor para verificar si todo está funcionando. Aquí usa sqlcmd para conectarse a SQL Server y ejecutar SELECT 1. Si devuelve éxito (código 0), Docker marca el contenedor como healthy.
+      test: ["CMD", "/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "${DB_PASSWORD}", "-Q", "SELECT 1"]
+      interval: 10s
+      # tests cada 5s
+      timeout: 5s
+      # 5 test erroneos y se va
+      retries: 5
+
+volumes:
+  sqlserver-data:
