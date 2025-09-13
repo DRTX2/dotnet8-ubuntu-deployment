@@ -1,11 +1,13 @@
+
 #!/bin/bash
+set -e
 
 updateRepositories(){
     sudo apt update
 }
 
 upgradeSystem(){
-    sudo apt upgrade
+    sudo apt upgrade -y
 }
 
 # comprobar herramientas necesarias esten instaladas
@@ -27,7 +29,7 @@ checkMake(){
     else
         echo "installing make"
         updateRepositories
-        sudo apt install make
+        sudo apt install make -y
     fi
     echo "done"
 }
@@ -57,23 +59,32 @@ checkDotNetRuntime(){
 }
 
 checkSSHServer(){
-    echo "Comprobando ssh"
+    echo "Comprobando si SSH está instalado y activo"
     if ssh -V &>/dev/null; then
-        echo "done"
+        echo "SSH ya está instalado y activo."
     else
+        # Instala el servidor SSH si no está presente
+        echo "Instalando OpenSSH Server..."
         updateRepositories
         sudo apt install openssh-server -y
-        sudo ssytemctl enable ssh --now
-        echo "Configurando ssh..."
-        echo "Permitiendo que el servicio SSH escuche todas las interfaces de la red disponibles."
-        echo "ListenAddress 0.0.0.0" > /etc/ssh/sshd?config
-        echo "Deshabilitando el acceso directo como root mediante contraseña."
-        echo "PermitRootLogin prohibit-password" > /etc/ssh/sshd?config
-        echo "Habilitando autentificación con contraseña para iniciar sesión desde clientes externos a la red en la que se encuentra"
-        echo "PasswordAuthentication yes" > /etc/ssh/sshd?config
+        # Habilita y arranca el servicio SSH
+        echo "Habilitando y arrancando el servicio SSH..."
+        sudo systemctl enable ssh --now
+        # Configura el archivo sshd_config
+        SSHD_CONFIG="/etc/ssh/sshd_config"
+        echo "Configurando SSH para escuchar en todas las interfaces de red..."
+        sudo sed -i '/^ListenAddress/d' "$SSHD_CONFIG"
+        echo "ListenAddress 0.0.0.0" | sudo tee -a "$SSHD_CONFIG"
+        echo "Deshabilitando el acceso root por contraseña..."
+        sudo sed -i '/^PermitRootLogin/d' "$SSHD_CONFIG"
+        echo "PermitRootLogin prohibit-password" | sudo tee -a "$SSHD_CONFIG"
+        echo "Habilitando autenticación por contraseña para usuarios..."
+        sudo sed -i '/^PasswordAuthentication/d' "$SSHD_CONFIG"
+        echo "PasswordAuthentication yes" | sudo tee -a "$SSHD_CONFIG"
+        echo "Reiniciando el servicio SSH para aplicar los cambios..."
         sudo systemctl restart ssh
-        echo "Es necesario reiniciar el servidor para aplicar cambios"
-        exit;
+        echo "# Es necesario reiniciar el servidor para aplicar completamente los cambios de SSH."
+        exit
     fi
 }
 
@@ -90,13 +101,12 @@ checkUFW(){
 
 checkDocker(){
     echo "Comprobando docker"
-    if(docker --version &>/dev/null) then
+    if docker --version &>/dev/null; then
         echo "done"
     else
         updateRepositories
         upgradeSystem
         # instalar dependencias
-        # ca-certificates es para https, gnupg para verificar firmas, lsb-release es para saber version de la distro
         sudo apt install ca-certificates curl gnupg lsb-release -y
         # agregar clave gpg de docker
         sudo mkdir -p /etc/apt/keyrings
@@ -106,12 +116,11 @@ checkDocker(){
         # instalar docker
         updateRepositories
         sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-        if(docker --version &>/dev/null) then
+        if docker --version &>/dev/null; then
             echo "Docker is now installed succesfully"
         else
             echo "Something went wrong installing docker"
         fi
-        # comprobar con docker hello world
     fi
 }
 
@@ -129,10 +138,12 @@ setupUFW(){
     echo "Configuring firewall (ufw)"
     echo "Exporting .env variables..."
 
-    # Export variables automáticamente
+    if [ ! -f .env ]; then
+        echo "Archivo .env no encontrado. Abortando."
+        exit 1
+    fi
     set -a
     source .env
-    # disable feature
     set +a
 
     echo -e "\nSHOW CURRENT UFW STATUS\n"
@@ -229,6 +240,7 @@ EOF"
     echo "✅ Service $SERVICE_NAME started"
 }
 
+
 executeScript(){
     echo "correra en ubuntu server 24.04.3 LTS, principalmente lo defino porque no hay apt en alma linux"
     checkGit
@@ -242,7 +254,7 @@ executeScript(){
     setupUFW
     configUserAndGrants
     tryExecuteApp
-    deploy
+    createSystemdService
 }
 
 executeScript
