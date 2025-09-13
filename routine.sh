@@ -1,6 +1,29 @@
 
+
 #!/bin/bash
+# ------------------------------------------------------------
+# Script de despliegue automatizado para API .NET 8
+# - Prepara entorno, instala dependencias, configura firewall
+# - Despliega y publica la app como servicio systemd
+# - Requiere Ubuntu Server 24.04.3 LTS
+# ------------------------------------------------------------
 set -e
+
+# Archivo de log
+LOG_FILE="/var/log/deploy_script.log"
+
+# Trap global para limpieza en caso de error/interrupción
+cleanup() {
+        echo "\n[INFO] Script interrumpido o fallido. Revisión recomendada." | tee -a "$LOG_FILE"
+        # Aquí puedes agregar limpieza de recursos temporales si es necesario
+}
+trap cleanup EXIT
+
+# Comprobación de permisos
+if [ "$EUID" -ne 0 ]; then
+    echo "Por favor, ejecuta este script como root o con sudo." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
 updateRepositories(){
     sudo apt update
@@ -126,52 +149,67 @@ checkDocker(){
 
 
 initSQLServer(){
-    echo "Comprobando sqlserver"
-    echo "done"
-    docker pull mcr.microsoft.com/mssql/server:2022-latest
-    docker compose  up 
-    # creo que mejor lo edito tipo que se activen varias cosas pesadas mejor antes de levantar lo necesario
+        echo "Comprobando sqlserver" | tee -a "$LOG_FILE"
+        echo "Descargando imagen de SQL Server..." | tee -a "$LOG_FILE"
+        docker pull mcr.microsoft.com/mssql/server:2022-latest | tee -a "$LOG_FILE"
+        echo "Levantando contenedor SQL Server..." | tee -a "$LOG_FILE"
+        docker compose up -d | tee -a "$LOG_FILE"
+        # Espera activa hasta que el contenedor esté healthy
+        echo "Esperando a que SQL Server esté listo..." | tee -a "$LOG_FILE"
+        until [ "$(docker inspect -f '{{.State.Health.Status}}' sqlserver 2>/dev/null)" == "healthy" ]; do
+            echo "Aún no está listo, esperando 5s..." | tee -a "$LOG_FILE"
+            sleep 5
+        done
+        echo "SQL Server está listo para aceptar conexiones." | tee -a "$LOG_FILE"
 }
 
 # configurar ufw
 setupUFW(){
-    echo "Configuring firewall (ufw)"
-    echo "Exporting .env variables..."
+    echo "Configuring firewall (ufw)" | tee -a "$LOG_FILE"
+    echo "Exporting .env variables..." | tee -a "$LOG_FILE"
 
     if [ ! -f .env ]; then
-        echo "Archivo .env no encontrado. Abortando."
+        echo "Archivo .env no encontrado. Abortando." | tee -a "$LOG_FILE"
         exit 1
     fi
     set -a
     source .env
     set +a
 
-    echo -e "\nSHOW CURRENT UFW STATUS\n"
-    sudo ufw status
-    echo ""
+    # Validación de variables críticas
+    for var in CLIENTS_SERVICE_PORT ORDERS_SERVICE_PORT PROJECT_NAME PROJECT_USER_FOR_SERVICE PROJECT_GIT_RESOURCE_URL; do
+      if [ -z "${!var}" ]; then
+        echo "Error: La variable $var no está definida en .env" | tee -a "$LOG_FILE"
+        exit 1
+      fi
+    done
 
-    echo "Checking port usage..."
+    echo -e "\nSHOW CURRENT UFW STATUS\n" | tee -a "$LOG_FILE"
+    sudo ufw status | tee -a "$LOG_FILE"
+    echo "" | tee -a "$LOG_FILE"
+
+    echo "Checking port usage..." | tee -a "$LOG_FILE"
     if sudo lsof -i :$CLIENTS_SERVICE_PORT &>/dev/null; then
-        echo "❌ Client service port $CLIENTS_SERVICE_PORT is already in use!"
+        echo "❌ Client service port $CLIENTS_SERVICE_PORT is already in use!" | tee -a "$LOG_FILE"
         exit 1
     fi
 
     if sudo lsof -i :$ORDERS_SERVICE_PORT &>/dev/null; then
-        echo "❌ Orders service port $ORDERS_SERVICE_PORT is already in use!"
+        echo "❌ Orders service port $ORDERS_SERVICE_PORT is already in use!" | tee -a "$LOG_FILE"
         exit 1
     fi
 
-    echo "✅ Ports are free, applying UFW configuration..."
-    echo "Ensuring SSH port is available during modifications"
-    sudo ufw allow 22/tcp
+    echo "✅ Ports are free, applying UFW configuration..." | tee -a "$LOG_FILE"
+    echo "Ensuring SSH port is available during modifications" | tee -a "$LOG_FILE"
+    sudo ufw allow 22/tcp | tee -a "$LOG_FILE"
 
-    sudo ufw enable
+    sudo ufw enable | tee -a "$LOG_FILE"
 
-    sudo ufw allow ${CLIENTS_SERVICE_PORT}/tcp
-    sudo ufw allow ${ORDERS_SERVICE_PORT}/tcp
+    sudo ufw allow ${CLIENTS_SERVICE_PORT}/tcp | tee -a "$LOG_FILE"
+    sudo ufw allow ${ORDERS_SERVICE_PORT}/tcp | tee -a "$LOG_FILE"
 
-    echo -e "\n\nShow current ufw configs\n\n"
-    sudo ufw status
+    echo -e "\n\nShow current ufw configs\n\n" | tee -a "$LOG_FILE"
+    sudo ufw status | tee -a "$LOG_FILE"
 }
 
 
@@ -189,26 +227,24 @@ tryExecuteApp() {
     sudo chown -R "$PROJECT_USER_FOR_SERVICE:$PROJECT_USER_FOR_SERVICE" "$PROJECT_DIR"
     cd "$PROJECT_DIR" || exit
 
-    echo "Cloning project"
+    echo "Clonando proyecto desde $PROJECT_GIT_RESOURCE_URL..." | tee -a "$LOG_FILE"
     # Asegurarse de que el directorio esté vacío antes de clonar
     if [ "$(ls -A "$PROJECT_DIR")" ]; then
-        echo "El directorio $PROJECT_DIR no está vacío. Limpiando..."
+        echo "El directorio $PROJECT_DIR no está vacío. Limpiando..." | tee -a "$LOG_FILE"
         rm -rf "$PROJECT_DIR"/*
     fi
-    git clone "$PROJECT_GIT_RESOURCE_URL" .
+    git clone "$PROJECT_GIT_RESOURCE_URL" . | tee -a "$LOG_FILE"
 
-    echo "Migrating data"
-    dotnet ef database update
+    echo "Ejecutando migraciones de base de datos..." | tee -a "$LOG_FILE"
+    dotnet ef database update | tee -a "$LOG_FILE"
 
-    echo -e "Complete\n"
-    echo "Compiling project"
-    dotnet publish -c Release -o ./publish
+    echo -e "Compilando y publicando el proyecto...\n" | tee -a "$LOG_FILE"
+    dotnet publish -c Release -o ./publish | tee -a "$LOG_FILE"
 
     cd "$PROJECT_DIR/publish" || exit
 
-    trap "echo 'App interrumpida por el usuario'; return" SIGINT
-    dotnet "$PROJECT_NAME.dll"
-    trap - SIGINT
+    # Limpieza de archivos temporales si es necesario
+    # Ejemplo: rm -f /tmp/archivo_temp
 }
 
 createSystemdService(){
